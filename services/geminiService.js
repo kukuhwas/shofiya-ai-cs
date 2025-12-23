@@ -38,24 +38,50 @@ const tools = [
                     },
                     required: ["phone"]
                 }
+            },
+            {
+                name: "validateOrder",
+                description: "Memvalidasi stok dan harga akhir sebelum pelanggan membayar. Gunakan ID kelompok item dari hasil pencarian.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        itemGroupId: {
+                            type: "string",
+                            description: "ID kelompok item (item_group_id) yang didapat dari searchInventory."
+                        },
+                        quantity: {
+                            type: "number",
+                            description: "Jumlah barang yang ingin dipesan pelanggan."
+                        }
+                    },
+                    required: ["itemGroupId", "quantity"]
+                }
             }
         ]
     }
 ];
 
-const getGeminiResponse = async (instruction, userMsg, phone) => {
+/**
+ * 🤖 FUNGSI UTAMA GEMINI
+ */
+const getGeminiResponse = async (instruction, userMsg, phone, history = []) => {
     const model = genAI.getGenerativeModel({
         model: "gemini-2.0-flash",
         systemInstruction: instruction,
         tools: tools
     });
 
-    const chat = model.startChat();
+    // Memulai chat dengan riwayat (history) yang ditarik dari MongoDB oleh Worker
+    const chat = model.startChat({
+        history: history
+    });
+
     let result = await chat.sendMessage(userMsg);
     let response = result.response;
 
-    // Loop ini memastikan Gemini menyelesaikan semua panggil alat sampai tuntas
-    while (response.functionCalls() && response.functionCalls().length > 0) {
+    // Loop ini memastikan Gemini menyelesaikan semua panggilan tool sampai tuntas
+    let iterationLimit = 0;
+    while (response.functionCalls() && response.functionCalls().length > 0 && iterationLimit < 5) {
         const calls = response.functionCalls();
         const functionResponses = [];
 
@@ -64,10 +90,17 @@ const getGeminiResponse = async (instruction, userMsg, phone) => {
             console.log(`🎯 AI MEMANGGIL TOOL: ${name} | Args:`, args);
 
             let toolData;
-            if (name === "searchInventory") {
-                toolData = await toolHandler.searchInventory(args.keyword);
-            } else if (name === "findCustomerOrder") {
-                toolData = await toolHandler.findCustomerOrder(args.phone || phone);
+            try {
+                if (name === "searchInventory") {
+                    toolData = await toolHandler.searchInventory(args.keyword);
+                } else if (name === "findCustomerOrder") {
+                    toolData = await toolHandler.findCustomerOrder(args.phone || phone);
+                } else if (name === "validateOrder") {
+                    toolData = await toolHandler.validateOrder(args.itemGroupId, args.quantity);
+                }
+            } catch (err) {
+                console.error(`❌ Error executing tool ${name}:`, err.message);
+                toolData = "Maaf, terjadi kendala saat mengakses data sistem.";
             }
 
             functionResponses.push({
@@ -81,8 +114,10 @@ const getGeminiResponse = async (instruction, userMsg, phone) => {
         // Kirim semua hasil tool kembali ke Gemini dalam satu waktu
         result = await chat.sendMessage(functionResponses);
         response = result.response;
+        iterationLimit++;
     }
 
     return response.text();
 };
+
 module.exports = { getGeminiResponse };
