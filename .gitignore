@@ -1,0 +1,16 @@
+# Dependency
+node_modules/
+
+# Environment Variables (Berisi API Key Gemini & WooWa)
+.env
+
+# Logs
+npm-debug.log*
+logs/
+
+# Media Lokal (Jangan simpan gambar user di Git)
+media/
+public/media/
+
+# Database Lokal (Jika ada file db di root)
+*.db
