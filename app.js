@@ -3,10 +3,22 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const mongoose = require('mongoose'); // Tambahan untuk koneksi DB
 const { chatQueue } = require('./queues/chatQueue');
 const SystemConfig = require('./models/SystemConfig');
+const ChatLog = require('./models/ChatLog'); // Pastikan model ChatLog tersedia
+const cors = require('cors');
 
 const app = express();
+app.use(cors());
+
+/**
+ * 🛠️ DATABASE CONNECTION
+ * Menghubungkan ke DB 'shofiya' untuk melayani API Admin
+ */
+mongoose.connect(process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/shofiya')
+    .then(() => console.log('✅ Connected to MongoDB: shofiya'))
+    .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
 /**
  * 🛠️ MIDDLEWARE CONFIGURATION
@@ -41,12 +53,11 @@ app.post('/webhook/wa-in', async (req, res) => {
         const message = b.message ? String(b.message).trim() : "";
         const sender_name = b.sender_name || "Pelanggan";
 
-        // 3. HANDLE MEDIA BASE64 (Hasil temuan Inspector)
+        // 3. HANDLE MEDIA BASE64
         let mediaUrl = null;
-        let mediaType = 'text';
+        let mediaType = 'none';
 
         if (b.media && b.media !== "none") {
-            // Deteksi Ekstensi berdasarkan Magic Number Base64
             let extension = 'bin';
             if (b.media.startsWith('/9j/4')) {
                 extension = 'jpg';
@@ -63,15 +74,11 @@ app.post('/webhook/wa-in', async (req, res) => {
             const storagePath = '/var/www/shofiya-media';
             const localPath = path.join(storagePath, filename);
 
-            // Pastikan folder tersedia
             if (!fs.existsSync(storagePath)) {
                 fs.mkdirSync(storagePath, { recursive: true });
             }
 
-            // Simpan Base64 ke File fisik
             fs.writeFileSync(localPath, b.media, { encoding: 'base64' });
-
-            // Path URL untuk diakses Nginx/Dashboard
             mediaUrl = `/media/${filename}`;
             console.log(`📸 Media Tersimpan: ${filename} (${mediaType})`);
         }
@@ -104,7 +111,7 @@ app.post('/webhook/wa-in', async (req, res) => {
             phone: phone_no,
             msg: message,
             name: sender_name,
-            mediaUrl: mediaUrl,   // Sekarang berisi path lokal /media/wa_xxx.ext
+            mediaUrl: mediaUrl,
             mediaType: mediaType
         }, {
             attempts: 3,
@@ -123,14 +130,60 @@ app.post('/webhook/wa-in', async (req, res) => {
 });
 
 /**
+ * 🏢 API ENDPOINTS UNTUK ADMIN DASHBOARD (Opsi B)
+ * Memberikan akses langsung ke riwayat chat di DB shofiya
+ */
+
+// A. Mendapatkan Daftar Kontak Unik (Sidebar)
+app.get('/api/admin/chat-contacts', async (req, res) => {
+    try {
+        const contacts = await ChatLog.aggregate([
+            { $sort: { timestamp: -1 } },
+            {
+                $group: {
+                    _id: "$phone",
+                    lastMessage: { $first: "$message" },
+                    lastTime: { $first: "$timestamp" },
+                    name: {
+                        $max: {
+                            $cond: [{ $eq: ["$role", "user"] }, "$name", ""]
+                        }
+                    },
+                    hasMedia: { $first: "$media.exists" }
+                }
+            },
+            { $sort: { lastTime: -1 } }
+        ]);
+        res.json(contacts);
+    } catch (err) {
+        console.error("❌ API Contacts Error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// B. Mendapatkan Detail History per Nomor (Chat Window)
+app.get('/api/admin/chat-history/:phone', async (req, res) => {
+    try {
+        const { phone } = req.params;
+        const history = await ChatLog.find({ phone })
+            .sort({ timestamp: 1 })
+            .limit(100);
+        res.json(history);
+    } catch (err) {
+        console.error("❌ API History Error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
  * 🚀 JALANKAN SERVER
  */
 const PORT = process.env.PORT || 3003;
 app.listen(PORT, () => {
-    console.log(`📡 Shofiya AI-CS Listener (v2.1 - Base64 Support) Online di Port ${PORT}`);
+    console.log(`📡 Shofiya AI-CS Listener (v2.2 - Admin API Support) Online di Port ${PORT}`);
 });
 
-// Render Settings
+// Render Settings (Legacy Support)
 app.get('/settings', async (req, res) => {
     let config = await SystemConfig.findOne({ key: 'ai_instruction' });
     if (!config) {
